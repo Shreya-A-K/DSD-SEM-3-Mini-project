@@ -1,120 +1,185 @@
 `timescale 1ns/1ps
 
-// -------------------- Comparator --------------------
-module comparator_16bit (
-    input  [15:0] A,   // Entered password
-    input  [15:0] B,   // Stored password
-    output        A_eq_B
+// ---------------- keyboard_to_bcd ----------------
+module keyboard_to_bcd (
+  input i0,i1,i2,i3,i4,i5,i6,i7,i8,i9,
+  output dclk,o0,o1,o2,o3
 );
-    assign A_eq_B = (A == B);
+  assign dclk = i0|i1|i2|i3|i4|i5|i6|i7|i8|i9;
+  assign o0 = i1|i3|i5|i7|i9;
+  assign o1 = i2|i3|i6|i7;
+  assign o2 = i4|i5|i6|i7;
+  assign o3 = i8|i9;
 endmodule
 
-// -------------------- Seven Segment Decoder --------------------
-module seven_seg_decoder (
-    input  [3:0] bin,
-    output reg [6:0] seg  // {a,b,c,d,e,f,g}
+// ---------------- D Flip-Flop ----------------
+module dff (
+  input clk,
+  input rst,
+  input d,
+  output reg q
 );
-    always @(*) begin
-        case (bin)
-            4'b0000: seg = 7'b0000001; // 0
-            4'b0001: seg = 7'b1001111; // 1
-            4'b0010: seg = 7'b0010010; // 2
-            4'b0011: seg = 7'b0000110; // 3
-            4'b0100: seg = 7'b1001100; // 4
-            4'b0101: seg = 7'b0100100; // 5
-            4'b0110: seg = 7'b0100000; // 6
-            4'b0111: seg = 7'b0001111; // 7
-            4'b1000: seg = 7'b0000000; // 8
-            4'b1001: seg = 7'b0000100; // 9
-            default: seg = 7'b1111111; // off
-        endcase
+  always @(posedge clk or posedge rst)
+    if (rst) q <= 1'b0;
+    else q <= d;
+endmodule
+
+// ---------------- 8-bit Magnitude Comparator ----------------
+module mag_comp_8 (
+  input [7:0] A,
+  input [7:0] B,
+  output A_eq_B
+);
+  assign A_eq_B = (A == B);
+endmodule
+
+// ---------------- 8-bit binary to 2-digit BCD ----------------
+module bin_to_bcd (
+  input [7:0] bin,
+  output reg [3:0] bcd1, bcd0
+);
+  integer i;
+  reg [11:0] shift_reg;
+  always @(*) begin
+    bcd1 = 0; bcd0 = 0;
+    shift_reg = {4'd0, bin};
+    for(i=0;i<8;i=i+1) begin
+      if(bcd1>=5) bcd1 = bcd1+3;
+      if(bcd0>=5) bcd0 = bcd0+3;
+      shift_reg = shift_reg << 1;
+      {bcd1,bcd0} = shift_reg[11:4];
     end
+  end
 endmodule
 
-// -------------------- Top Module --------------------
-module password_lock (
-    input  [15:0] A,   // Entered 4-digit password
-    input  [15:0] B,   // Stored 4-digit password
-    output [6:0] segA0, segA1, segA2, segA3, // Entered password digits
-    output [6:0] segB0, segB1, segB2, segB3, // Stored password digits
-    output [6:0] segL0, segL1, segL2, segL3, // Lock status ("OPEN"/"CLOS")
-    output        LOCK_OPEN
+// ---------------- 2-bit Counter ----------------
+module counter_2bit_en (
+  input clk,
+  input rst,
+  input en,
+  output reg [1:0] count
+);
+  always @(posedge clk or posedge rst) begin
+    if(rst) count <= 2'b00;
+    else if(en)
+      count <= (count==2'b11) ? 2'b00 : count+1'b1;
+  end
+endmodule
+
+// ---------------- Top Module (8-bit version) ----------------
+module top_stitched (
+  input clk,
+  input rst,
+  input [7:0] s_key, // security side
+  input [7:0] c_key, // client side
+  input enter,
+  output reg [1:0] wrong_count,
+  output reg led_out,
+  output reg match_latched,
+  output reg success_led,
+  output [3:0] s_bcd_tens,s_bcd_ones,
+  output [3:0] c_bcd_tens,c_bcd_ones
 );
 
-    // Comparator
-    comparator_16bit cmp (
-        .A(A),
-        .B(B),
-        .A_eq_B(LOCK_OPEN)
-    );
+  // 8 DFFs per side
+  wire [7:0] s_q, c_q;
+  genvar i;
+  generate
+    for(i=0;i<8;i=i+1) begin: S_DFFS
+      dff dff_s(clk,rst,s_key[i],s_q[i]);
+    end
+    for(i=0;i<8;i=i+1) begin: C_DFFS
+      dff dff_c(clk,rst,c_key[i],c_q[i]);
+    end
+  endgenerate
 
-    // Display Entered Password
-    seven_seg_decoder dA0 (.bin(A[3:0]),   .seg(segA0));
-    seven_seg_decoder dA1 (.bin(A[7:4]),   .seg(segA1));
-    seven_seg_decoder dA2 (.bin(A[11:8]),  .seg(segA2));
-    seven_seg_decoder dA3 (.bin(A[15:12]), .seg(segA3));
+  // Convert to BCD
+  bin_to_bcd s_bcd_conv(.bin(s_q),.bcd1(s_bcd_tens),.bcd0(s_bcd_ones));
+  bin_to_bcd c_bcd_conv(.bin(c_q),.bcd1(c_bcd_tens),.bcd0(c_bcd_ones));
 
-    // Display Stored Password
-    seven_seg_decoder dB0 (.bin(B[3:0]),   .seg(segB0));
-    seven_seg_decoder dB1 (.bin(B[7:4]),   .seg(segB1));
-    seven_seg_decoder dB2 (.bin(B[11:8]),  .seg(segB2));
-    seven_seg_decoder dB3 (.bin(B[15:12]), .seg(segB3));
+  // Comparator
+  wire match_now;
+  mag_comp_8 comp(.A(s_q),.B(c_q),.A_eq_B(match_now));
 
-    // Display Lock Status
-    // For simplicity: just show "OPEN" if correct, else "CLOS"
-    assign segL0 = (LOCK_OPEN) ? 7'b0001000 : 7'b0100000; // O / C
-    assign segL1 = (LOCK_OPEN) ? 7'b0001100 : 7'b1000110; // P / L
-    assign segL2 = (LOCK_OPEN) ? 7'b0000110 : 7'b1000000; // E / O
-    assign segL3 = (LOCK_OPEN) ? 7'b0101011 : 7'b0010010; // N / S
+  // Latch match on Enter
+  always @(posedge enter or posedge rst) begin
+    if(rst) begin
+      match_latched <= 0;
+      success_led   <= 0;
+    end else begin
+      match_latched <= match_now;
+      success_led   <= match_now;
+    end
+  end
 
+  // Wrong-entry counter
+  wire incr = enter & (~match_latched) & (~led_out);
+  wire counter_rst = rst | match_latched;
+  wire [1:0] cnt;
+  counter_2bit_en counter(clk,counter_rst,incr,cnt);
+
+  always @(posedge clk or posedge rst) begin
+    if(rst) led_out <= 0;
+    else if(match_latched) led_out <= 0;
+    else if(cnt==2'b10 & incr) led_out <= 1;
+    else led_out <= led_out;
+
+    wrong_count <= cnt;
+  end
 endmodule
 
-// -------------------- Testbench --------------------
-module tb_password_lock;
+// ---------------- Testbench ----------------
+module tb_top_stitched;
+  reg clk,rst,enter;
+  reg [7:0] s_key, c_key;
+  wire [1:0] wrong_count;
+  wire led_out, match_latched, success_led;
+  wire [3:0] s_bcd_tens,s_bcd_ones;
+  wire [3:0] c_bcd_tens,c_bcd_ones;
 
-    reg  [15:0] A;
-    reg  [15:0] B;
-    wire [6:0] segA0, segA1, segA2, segA3;
-    wire [6:0] segB0, segB1, segB2, segB3;
-    wire [6:0] segL0, segL1, segL2, segL3;
-    wire LOCK_OPEN;
+  top_stitched DUT(clk,rst,s_key,c_key,enter,wrong_count,led_out,match_latched,success_led,
+                   s_bcd_tens,s_bcd_ones,c_bcd_tens,c_bcd_ones);
 
-    // Intermediate for monitoring
-    wire lock_status;
-    assign lock_status = LOCK_OPEN;
+  initial clk=0;
+  always #5 clk=~clk;
 
-    // Instantiate the top module
-    password_lock uut (
-        .A(A), .B(B),
-        .segA0(segA0), .segA1(segA1), .segA2(segA2), .segA3(segA3),
-        .segB0(segB0), .segB1(segB1), .segB2(segB2), .segB3(segB3),
-        .segL0(segL0), .segL1(segL1), .segL2(segL2), .segL3(segL3),
-        .LOCK_OPEN(LOCK_OPEN)
-    );
+  initial begin
+    rst=1; enter=0;
+    s_key = 8'b0;
+    c_key = 8'b0;
+    #20 rst=0;
 
-    initial begin
-        $monitor("Time=%0t | Entered=%h Stored=%h | LOCK=%b",
-                  $time, A, B, lock_status);
+    // Test Case 1: matching keys
+    $display("Test Case 1: Matching keys");
+    s_key = 8'b00010010; c_key = 8'b00010010;
+    #10 enter=1; #10 enter=0; #10;
+    $display("Match=%b, Success LED=%b, Wrong LED=%b, Count=%b",
+              match_latched, success_led, led_out, wrong_count);
 
-        // Stored password = 1234 (in BCD → 0001 0010 0011 0100)
-        B = 16'b0001_0010_0011_0100;
+    // Test Case 2: wrong entry
+    $display("Test Case 2: Wrong entry");
+    s_key = 8'b00100100; c_key = 8'b00010010;
+    #10 enter=1; #10 enter=0; #10;
+    $display("Match=%b, Success LED=%b, Wrong LED=%b, Count=%b",
+              match_latched, success_led, led_out, wrong_count);
 
-        // Test 1: Entered = 1234 → OPEN
-        A = 16'b0001_0010_0011_0100; #10;
-
-        // Test 2: Entered = 5678 → CLOSED
-        A = 16'b0101_0110_0111_1000; #10;
-
-        // Test 3: Entered = 1111 → CLOSED
-        A = 16'b0001_0001_0001_0001; #10;
-
-        // Test 4: Entered = 4321 → CLOSED
-        A = 16'b0100_0011_0010_0001; #10;
-
-        // Test 5: Entered = 1234 → OPEN again
-        A = 16'b0001_0010_0011_0100; #10;
-
-        $finish;
+    // Test Case 3: multiple wrong entries
+    $display("Test Case 3: Multiple wrong entries");
+    repeat(3) begin
+      s_key = 8'b00100100; c_key = 8'b00010010;
+      #10 enter=1; #10 enter=0; #10;
+      $display("Match=%b, Success LED=%b, Wrong LED=%b, Count=%b",
+                match_latched, success_led, led_out, wrong_count);
     end
 
+    // Test Case 4: correct entry clears LED
+    $display("Test Case 4: Correct entry clears LED");
+    s_key = 8'b00010010; c_key = 8'b00010010;
+    #10 enter=1; #10 enter=0; #10;
+    $display("Match=%b, Success LED=%b, Wrong LED=%b, Count=%b",
+              match_latched, success_led, led_out, wrong_count);
+
+    $display("Simulation finished.");
+    $stop;
+  end
 endmodule
